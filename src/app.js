@@ -45,56 +45,50 @@ const run = async (userName, password, cookie, userSizeInfoMap, logger) => {
         token: new FileTokenStore(`${tokenDir}/${userName}.json`),
       });
 
-      // 2. Cookie 注入逻辑 (修复核心风控问题)
+      // 2. Cookie 注入与状态伪造核心逻辑
       if (cookie) {
-        logger.log("检测到 Cookie 配置，正在注入以绕过设备验证...");
+        logger.log("检测到 Cookie 配置，正在注入并伪造登录状态...");
         
-        // 方案A: 针对标准 cloud189-sdk (基于 got)
+        // 步骤A: 注入请求头 (Headers)
+        const commonHeaders = {
+            'Cookie': cookie,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        };
+
+        // 尝试通过 request.extend 注入
         if (cloudClient.request && typeof cloudClient.request.extend === 'function') {
             cloudClient.request = cloudClient.request.extend({
-                headers: { 'Cookie': cookie }
+                headers: commonHeaders
             });
-            logger.log("✅ [方案A] 成功通过 request.extend 注入 Cookie");
+            logger.log("✅ 请求头注入成功");
         } 
-        // 方案B: 针对旧版 SDK 或内部结构
-        else if (cloudClient._client && typeof cloudClient._client.extend === 'function') {
-            cloudClient._client = cloudClient._client.extend({
-                headers: { 'Cookie': cookie }
-            });
-            logger.log("✅ [方案B] 成功通过 _client.extend 注入 Cookie");
-        }
-        // 方案C: 暴力劫持 (兼容性最强)
+        // 兼容性注入：暴力代理 request 方法 (防止 extend 不存在)
         else {
-            logger.warn("⚠️ [方案C] 未找到标准扩展点，使用函数代理强制注入 Cookie");
-            const originalRequest = cloudClient.request;
-            // 重新定义 request 方法
-            cloudClient.request = function(...args) {
-                // got 支持 (url, options) 或 (options) 两种调用方式
+             const originalRequest = cloudClient.request;
+             cloudClient.request = function(...args) {
                 let options = args[0];
-                if (typeof args[0] === 'string') {
-                    options = args[1] || {};
-                }
+                if (typeof args[0] === 'string') options = args[1] || {};
                 
-                // 强制写入 Cookie
-                options.headers = options.headers || {};
-                options.headers['Cookie'] = cookie;
+                options.headers = { ...options.headers, ...commonHeaders };
                 
-                // 确保参数回填
-                if (typeof args[0] === 'string') {
-                    args[1] = options;
-                } else {
-                    args[0] = options;
-                }
+                if (typeof args[0] === 'string') args[1] = options;
+                else args[0] = options;
                 
-                // 绑定 this 上下文调用原方法
                 return originalRequest.apply(this, args);
-            }.bind(cloudClient);
+             }.bind(cloudClient);
+             logger.log("✅ 请求方法代理成功");
         }
+
+        // 步骤B: 【关键】伪造内部 Session 状态
+        // 这一步是为了欺骗 SDK，让它以为已经登录成功，从而不再调用 login() 接口
+        cloudClient.sessionKey = "COOKIE_LOGIN_BYPASS";
+        cloudClient.accessToken = "COOKIE_LOGIN_BYPASS";
       }
 
-      // 3. 执行业务逻辑
-      // 注意：带了 Cookie 后，getUserSizeInfo 会直接通过，不再触发登录流程
+      // 3. 执行业务
+      // 由于上面设置了 sessionKey，SDK 会跳过登录，直接用我们注入的 Cookie 发请求
       const beforeUserSizeInfo = await cloudClient.getUserSizeInfo();
+      
       userSizeInfoMap.set(userName, {
         cloudClient,
         userSizeInfo: beforeUserSizeInfo,
@@ -105,8 +99,9 @@ const run = async (userName, password, cookie, userSizeInfoMap, logger) => {
     } catch (e) {
       if (e.response) {
         logger.log(`请求失败: ${e.response.statusCode}, ${e.response.body}`);
-        if(e.response.statusCode === 401) {
-            logger.error("❌ Cookie 可能已失效，请重新抓取！");
+        // 专门捕获 401 错误，提示 Cookie 失效
+        if (e.response.statusCode === 401 || (e.response.body && JSON.stringify(e.response.body).includes("InvalidSession"))) {
+            logger.error("❌ 严重错误: Cookie 已失效或 IP 变动导致拒绝访问。请重新在浏览器抓取 Cookie！");
         }
       } else {
         logger.error(e);
@@ -125,10 +120,8 @@ const run = async (userName, password, cookie, userSizeInfoMap, logger) => {
 
 // 开始执行程序
 async function main() {
-  // 用于统计实际容量变化
+  //  用于统计实际容量变化
   const userSizeInfoMap = new Map();
-  
-  // 遍历所有账号
   for (let index = 0; index < accounts.length; index++) {
     const account = accounts[index];
     // 解构出 cookie
@@ -141,7 +134,7 @@ async function main() {
     await run(userName, password, cookie, userSizeInfoMap, logger);
   }
 
-  // 数据汇总
+  //数据汇总
   for (const [
     userName,
     { cloudClient, userSizeInfo, logger },
@@ -173,7 +166,7 @@ async function main() {
           ).toFixed(2)}G`
         );
     } catch (error) {
-        logger.error("获取签后容量失败: " + error.message);
+        logger.warn("获取签后容量失败 (可能是Cookie部分接口受限): " + error.message);
     }
   }
 }
