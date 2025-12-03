@@ -32,35 +32,68 @@ const doUserTask = async (cloudClient, logger) => {
   );
 };
 
-// 【修改点1】增加了 cookie 参数
 const run = async (userName, password, cookie, userSizeInfoMap, logger) => {
   if (userName && password) {
     const before = Date.now();
     try {
       logger.log("开始执行");
       
-      // 初始化 Client
+      // 1. 初始化客户端
       const cloudClient = new CloudClient({
         username: userName,
         password,
         token: new FileTokenStore(`${tokenDir}/${userName}.json`),
       });
 
-      // 【修改点2】如果提供了 Cookie，尝试注入 Header 以绕过登录
+      // 2. Cookie 注入逻辑 (修复核心风控问题)
       if (cookie) {
-        logger.log("检测到 Cookie 配置，尝试使用 Cookie 绕过登录风控...");
-        // 尝试通过修改内部 client 默认 header 的方式注入 Cookie
-        // 注意：这是针对 cloud189-sdk 底层 got 库的尝试性修复
-        if (cloudClient._client && cloudClient._client.extend) {
-             cloudClient._client = cloudClient._client.extend({
-                 headers: { 'Cookie': cookie }
-             });
-        } else {
-            // 如果无法直接注入，尝试在全局 request 中带上 (取决于 SDK 版本)
-            logger.warn("SDK 版本可能不直接支持 Header 注入，尝试继续执行...");
+        logger.log("检测到 Cookie 配置，正在注入以绕过设备验证...");
+        
+        // 方案A: 针对标准 cloud189-sdk (基于 got)
+        if (cloudClient.request && typeof cloudClient.request.extend === 'function') {
+            cloudClient.request = cloudClient.request.extend({
+                headers: { 'Cookie': cookie }
+            });
+            logger.log("✅ [方案A] 成功通过 request.extend 注入 Cookie");
+        } 
+        // 方案B: 针对旧版 SDK 或内部结构
+        else if (cloudClient._client && typeof cloudClient._client.extend === 'function') {
+            cloudClient._client = cloudClient._client.extend({
+                headers: { 'Cookie': cookie }
+            });
+            logger.log("✅ [方案B] 成功通过 _client.extend 注入 Cookie");
+        }
+        // 方案C: 暴力劫持 (兼容性最强)
+        else {
+            logger.warn("⚠️ [方案C] 未找到标准扩展点，使用函数代理强制注入 Cookie");
+            const originalRequest = cloudClient.request;
+            // 重新定义 request 方法
+            cloudClient.request = function(...args) {
+                // got 支持 (url, options) 或 (options) 两种调用方式
+                let options = args[0];
+                if (typeof args[0] === 'string') {
+                    options = args[1] || {};
+                }
+                
+                // 强制写入 Cookie
+                options.headers = options.headers || {};
+                options.headers['Cookie'] = cookie;
+                
+                // 确保参数回填
+                if (typeof args[0] === 'string') {
+                    args[1] = options;
+                } else {
+                    args[0] = options;
+                }
+                
+                // 绑定 this 上下文调用原方法
+                return originalRequest.apply(this, args);
+            }.bind(cloudClient);
         }
       }
 
+      // 3. 执行业务逻辑
+      // 注意：带了 Cookie 后，getUserSizeInfo 会直接通过，不再触发登录流程
       const beforeUserSizeInfo = await cloudClient.getUserSizeInfo();
       userSizeInfoMap.set(userName, {
         cloudClient,
@@ -68,9 +101,13 @@ const run = async (userName, password, cookie, userSizeInfoMap, logger) => {
         logger,
       });
       await Promise.all([doUserTask(cloudClient, logger)]);
+
     } catch (e) {
       if (e.response) {
         logger.log(`请求失败: ${e.response.statusCode}, ${e.response.body}`);
+        if(e.response.statusCode === 401) {
+            logger.error("❌ Cookie 可能已失效，请重新抓取！");
+        }
       } else {
         logger.error(e);
       }
@@ -88,49 +125,56 @@ const run = async (userName, password, cookie, userSizeInfoMap, logger) => {
 
 // 开始执行程序
 async function main() {
-  //  用于统计实际容量变化
+  // 用于统计实际容量变化
   const userSizeInfoMap = new Map();
+  
+  // 遍历所有账号
   for (let index = 0; index < accounts.length; index++) {
     const account = accounts[index];
-    // 【修改点3】从 account 中解构出 cookie
+    // 解构出 cookie
     const { userName, password, cookie } = account;
     const userNameInfo = mask(userName, 3, 7);
     const logger = log4js.getLogger(userName);
     logger.addContext("user", userNameInfo);
-    // 【修改点4】将 cookie 传递给 run
+    
+    // 将 cookie 传入 run 函数
     await run(userName, password, cookie, userSizeInfoMap, logger);
   }
 
-  //数据汇总
+  // 数据汇总
   for (const [
     userName,
     { cloudClient, userSizeInfo, logger },
   ] of userSizeInfoMap) {
-    const afterUserSizeInfo = await cloudClient.getUserSizeInfo();
-    logger.log(
-      `个人容量：⬆️  ${(
-        (afterUserSizeInfo.cloudCapacityInfo.totalSize -
-          userSizeInfo.cloudCapacityInfo.totalSize) /
-        1024 /
-        1024
-      ).toFixed(2)}M/${(
-        afterUserSizeInfo.cloudCapacityInfo.totalSize /
-        1024 /
-        1024 /
-        1024
-      ).toFixed(2)}G`,
-      `家庭容量：⬆️  ${(
-        (afterUserSizeInfo.familyCapacityInfo.totalSize -
-          userSizeInfo.familyCapacityInfo.totalSize) /
-        1024 /
-        1024
-      ).toFixed(2)}M/${(
-        afterUserSizeInfo.familyCapacityInfo.totalSize /
-        1024 /
-        1024 /
-        1024
-      ).toFixed(2)}G`
-    );
+    try {
+        const afterUserSizeInfo = await cloudClient.getUserSizeInfo();
+        logger.log(
+          `个人容量：⬆️  ${(
+            (afterUserSizeInfo.cloudCapacityInfo.totalSize -
+              userSizeInfo.cloudCapacityInfo.totalSize) /
+            1024 /
+            1024
+          ).toFixed(2)}M/${(
+            afterUserSizeInfo.cloudCapacityInfo.totalSize /
+            1024 /
+            1024 /
+            1024
+          ).toFixed(2)}G`,
+          `家庭容量：⬆️  ${(
+            (afterUserSizeInfo.familyCapacityInfo.totalSize -
+              userSizeInfo.familyCapacityInfo.totalSize) /
+            1024 /
+            1024
+          ).toFixed(2)}M/${(
+            afterUserSizeInfo.familyCapacityInfo.totalSize /
+            1024 /
+            1024 /
+            1024
+          ).toFixed(2)}G`
+        );
+    } catch (error) {
+        logger.error("获取签后容量失败: " + error.message);
+    }
   }
 }
 
