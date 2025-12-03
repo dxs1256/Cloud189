@@ -21,6 +21,7 @@ const doUserTask = async (cloudClient, logger) => {
   const tasks = Array.from({ length: execThreshold }, () =>
     cloudClient.userSign()
   );
+  // 这里捕获一下异常，防止单个任务失败炸掉整个流程
   const result = (await Promise.allSettled(tasks)).filter(
     ({ status, value }) =>
       status === "fulfilled" && !value.isSign && value.netdiskBonus
@@ -38,55 +39,59 @@ const run = async (userName, password, cookie, userSizeInfoMap, logger) => {
     try {
       logger.log("开始执行");
       
-      // 1. 初始化客户端
       const cloudClient = new CloudClient({
         username: userName,
         password,
         token: new FileTokenStore(`${tokenDir}/${userName}.json`),
       });
 
-      // 2. Cookie 注入与状态伪造核心逻辑
       if (cookie) {
-        logger.log("检测到 Cookie 配置，正在注入并伪造登录状态...");
+        logger.log("检测到 Cookie，正在配置【手机端】伪装...");
         
-        // 步骤A: 注入请求头 (Headers)
+        // =========================================================
+        // 修改区：切换为手机 User-Agent
+        // =========================================================
+        
         const commonHeaders = {
             'Cookie': cookie,
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            // 【修改点】改为 Android 手机 User-Agent
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+            // 【修改点】Referer 也改为移动端地址
+            'Referer': 'https://m.cloud.189.cn/', 
+            'Host': 'cloud.189.cn',
+            'Origin': 'https://m.cloud.189.cn'
         };
 
-        // 尝试通过 request.extend 注入
+        // 1. 强制注入 Headers 并清空 Hooks
         if (cloudClient.request && typeof cloudClient.request.extend === 'function') {
             cloudClient.request = cloudClient.request.extend({
-                headers: commonHeaders
+                headers: commonHeaders,
+                hooks: {
+                    // 依然保持清空钩子，防止 SDK 自动跳转登录
+                    beforeRequest: [],
+                    afterResponse: [],
+                    beforeRetry: [],
+                    beforeError: []
+                },
+                retry: { limit: 0 }
             });
-            logger.log("✅ 请求头注入成功");
+            logger.log("✅ 已伪装为 Android 手机设备");
         } 
-        // 兼容性注入：暴力代理 request 方法 (防止 extend 不存在)
-        else {
-             const originalRequest = cloudClient.request;
-             cloudClient.request = function(...args) {
-                let options = args[0];
-                if (typeof args[0] === 'string') options = args[1] || {};
-                
-                options.headers = { ...options.headers, ...commonHeaders };
-                
-                if (typeof args[0] === 'string') args[1] = options;
-                else args[0] = options;
-                
-                return originalRequest.apply(this, args);
-             }.bind(cloudClient);
-             logger.log("✅ 请求方法代理成功");
-        }
+        
+        // 2. 物理屏蔽 Login 方法
+        cloudClient.login = async function() {
+            logger.warn("🛑 拦截到 SDK 尝试自动登录，已阻止！(手机 Cookie 模式)");
+            return { sessionKey: "COOKIE_MODE_MOBILE", accessToken: "COOKIE_MODE_MOBILE" };
+        };
 
-        // 步骤B: 【关键】伪造内部 Session 状态
-        // 这一步是为了欺骗 SDK，让它以为已经登录成功，从而不再调用 login() 接口
-        cloudClient.sessionKey = "COOKIE_LOGIN_BYPASS";
-        cloudClient.accessToken = "COOKIE_LOGIN_BYPASS";
+        // 3. 伪造内部状态
+        cloudClient.sessionKey = "COOKIE_MODE_SESSION";
+        cloudClient.accessToken = "COOKIE_MODE_TOKEN";
       }
 
-      // 3. 执行业务
-      // 由于上面设置了 sessionKey，SDK 会跳过登录，直接用我们注入的 Cookie 发请求
+      // =========================================================
+
+      logger.log("正在获取用户信息...");
       const beforeUserSizeInfo = await cloudClient.getUserSizeInfo();
       
       userSizeInfoMap.set(userName, {
@@ -98,17 +103,16 @@ const run = async (userName, password, cookie, userSizeInfoMap, logger) => {
 
     } catch (e) {
       if (e.response) {
-        logger.log(`请求失败: ${e.response.statusCode}, ${e.response.body}`);
-        // 专门捕获 401 错误，提示 Cookie 失效
-        if (e.response.statusCode === 401 || (e.response.body && JSON.stringify(e.response.body).includes("InvalidSession"))) {
-            logger.error("❌ 严重错误: Cookie 已失效或 IP 变动导致拒绝访问。请重新在浏览器抓取 Cookie！");
+        logger.log(`请求失败: ${e.response.statusCode}`);
+        if (e.response.statusCode === 401 || (e.response.body && JSON.stringify(e.response.body).includes("Invalid"))) {
+             logger.error("❌ Cookie 无效或已过期！");
+        } else if (e.message && e.message.includes("设备ID不存在")) {
+             logger.error("❌ 依然触发设备验证，建议重新抓取【手机网页版】的 Cookie 尝试。");
+        } else {
+             logger.log("响应体片段: " + JSON.stringify(e.response.body).substring(0, 150));
         }
       } else {
         logger.error(e);
-      }
-      if (e.code === "ECONNRESET" || e.code === "ETIMEDOUT") {
-        logger.error("请求超时");
-        throw e;
       }
     } finally {
       logger.log(
@@ -120,17 +124,14 @@ const run = async (userName, password, cookie, userSizeInfoMap, logger) => {
 
 // 开始执行程序
 async function main() {
-  //  用于统计实际容量变化
   const userSizeInfoMap = new Map();
   for (let index = 0; index < accounts.length; index++) {
     const account = accounts[index];
-    // 解构出 cookie
     const { userName, password, cookie } = account;
     const userNameInfo = mask(userName, 3, 7);
     const logger = log4js.getLogger(userName);
     logger.addContext("user", userNameInfo);
     
-    // 将 cookie 传入 run 函数
     await run(userName, password, cookie, userSizeInfoMap, logger);
   }
 
@@ -166,7 +167,7 @@ async function main() {
           ).toFixed(2)}G`
         );
     } catch (error) {
-        logger.warn("获取签后容量失败 (可能是Cookie部分接口受限): " + error.message);
+        logger.warn("获取签后容量失败: " + error.message);
     }
   }
 }
@@ -174,7 +175,6 @@ async function main() {
 (async () => {
   try {
     await main();
-    //等待日志文件写入
     await delay(1000);
   } finally {
     const logs = catLogs();
