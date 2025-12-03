@@ -32,16 +32,35 @@ const doUserTask = async (cloudClient, logger) => {
   );
 };
 
-const run = async (userName, password, userSizeInfoMap, logger) => {
+// 【修改点1】增加了 cookie 参数
+const run = async (userName, password, cookie, userSizeInfoMap, logger) => {
   if (userName && password) {
     const before = Date.now();
     try {
       logger.log("开始执行");
+      
+      // 初始化 Client
       const cloudClient = new CloudClient({
         username: userName,
         password,
         token: new FileTokenStore(`${tokenDir}/${userName}.json`),
       });
+
+      // 【修改点2】如果提供了 Cookie，尝试注入 Header 以绕过登录
+      if (cookie) {
+        logger.log("检测到 Cookie 配置，尝试使用 Cookie 绕过登录风控...");
+        // 尝试通过修改内部 client 默认 header 的方式注入 Cookie
+        // 注意：这是针对 cloud189-sdk 底层 got 库的尝试性修复
+        if (cloudClient._client && cloudClient._client.extend) {
+             cloudClient._client = cloudClient._client.extend({
+                 headers: { 'Cookie': cookie }
+             });
+        } else {
+            // 如果无法直接注入，尝试在全局 request 中带上 (取决于 SDK 版本)
+            logger.warn("SDK 版本可能不直接支持 Header 注入，尝试继续执行...");
+        }
+      }
+
       const beforeUserSizeInfo = await cloudClient.getUserSizeInfo();
       userSizeInfoMap.set(userName, {
         cloudClient,
@@ -73,11 +92,13 @@ async function main() {
   const userSizeInfoMap = new Map();
   for (let index = 0; index < accounts.length; index++) {
     const account = accounts[index];
-    const { userName, password } = account;
+    // 【修改点3】从 account 中解构出 cookie
+    const { userName, password, cookie } = account;
     const userNameInfo = mask(userName, 3, 7);
     const logger = log4js.getLogger(userName);
     logger.addContext("user", userNameInfo);
-    await run(userName, password, userSizeInfoMap, logger);
+    // 【修改点4】将 cookie 传递给 run
+    await run(userName, password, cookie, userSizeInfoMap, logger);
   }
 
   //数据汇总
