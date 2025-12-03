@@ -1,20 +1,16 @@
 name: Cloud check in action
 on:
-  push:
-    branches:
-      - main
-  watch:
-    types: started
   workflow_dispatch:
   schedule:
-    - cron: 35 2 * * *
+    # 每天 UTC 16:00 运行 (北京时间 00:00)
+    - cron: '0 16 * * *'
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     environment: user
     steps:
-      #- name: 🔀 random delay 0-300 seconds
-       # run: sleep $((RANDOM % 301))
+      - name: 🔀 random delay 0-300 seconds
+        run: sleep $((RANDOM % 301))
 
       - name: 🔌 Check out code
         uses: actions/checkout@main
