@@ -113,16 +113,50 @@ async function main() {
   }
 }
 
+// 修改后的推送逻辑
 (async () => {
   try {
     await main();
     //等待日志文件写入
     await delay(1000);
   } finally {
-    const logs = catLogs();
+    // 获取内存中的日志事件
     const events = recording.replay();
-    const content = events.map((e) => `${e.data.join("")}`).join("  \n");
-    push("天翼云盘自动签到任务", logs + content);
+    
+    // 美化内容处理
+    const beautifulContent = events
+      .map((e) => e.data.join("")) // 提取日志文本
+      .filter((text) => {
+        // 过滤掉不需要显示的流水账日志
+        const noise = ["开始执行", "执行完毕"];
+        return !noise.some(n => text.includes(n));
+      })
+      .map((text) => {
+        // 针对特定内容添加排版
+        if (text.includes("个人签到任务")) {
+           // 提取数字部分，加粗显示结果
+           return `✅ **签到结果**\n${text.replace("个人签到任务: ", "")}`;
+        }
+        if (text.includes("个人容量")) {
+           // 将逗号替换为换行，让个人和家庭容量分开显示
+           // 这里的 replace 是为了匹配 main 函数中 logger.log 的输出格式
+           // 如果 main 函数输出是用空格分开的，这里可能需要调整 regex
+           return `📈 **容量变动**\n${text.replace(/，/g, "\n").replace(/, /g, "\n")}`; 
+        }
+        if (text.includes("请求失败") || text.includes("超时") || text.includes("Error")) {
+           return `❌ **异常提醒**\n${text}`;
+        }
+        // 其他保留的日志
+        return text;
+      })
+      .join("\n\n"); // 使用双换行进行段落分割
+
+    // 如果没有有效内容，给个提示
+    const finalMessage = beautifulContent || "本次运行未产生重要日志信息";
+    
+    // 推送优化后的内容
+    await push("天翼云盘签到通知", finalMessage);
+    
     recording.erase();
     cleanLogs();
   }
