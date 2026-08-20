@@ -39,7 +39,7 @@ const cleanLogs = () => {
   }
   const logs = fs.readdirSync(".logs");
   logs.forEach(log => {
-    if(log.endsWith(".log")) {
+    if (log.endsWith(".log")) {
       fs.unlinkSync(`.logs/${log}`);
     }
   })
@@ -52,8 +52,20 @@ const catLogs = () => {
   const logs = fs.readdirSync(".logs");
   const content = logs
     .map((file) => fs.readFileSync(`.logs/${file}`, { encoding: "utf-8" }))
-    .join("\r");
+    .join("\n\n");
   return content;
 };
 
-module.exports = { log4js, cleanLogs, catLogs };
+// recording appender（log4js 内置，用于捕获推送日志）
+const recording = require("log4js/lib/appenders/recording");
+
+const replayLogs = () => {
+  const events = recording.replay();
+  return events.map((e) => `${e.data.join("")}`).join("  \n");
+};
+
+const eraseLogs = () => {
+  recording.erase();
+};
+
+module.exports = { log4js, cleanLogs, catLogs, replayLogs, eraseLogs };
