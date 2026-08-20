@@ -1,7 +1,7 @@
 {
-  "name": "cloud",
+  "name": "cloud189-checkin",
   "version": "1.0.0",
-  "description": "",
+  "description": "天翼网盘自动签到",
   "main": "index.js",
   "scripts": {
     "start": "node --unhandled-rejections=strict ./src/app.js",
