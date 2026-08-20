@@ -4,11 +4,10 @@ const {
   FileTokenStore,
   logger: sdkLogger,
 } = require("cloud189-sdk");
-const recording = require("log4js/lib/appenders/recording");
 const accounts = require("../accounts");
 const { mask, delay } = require("./utils");
 const push = require("./push");
-const { log4js, cleanLogs, catLogs } = require("./logger");
+const { log4js, cleanLogs, catLogs, replayLogs, eraseLogs } = require("./logger");
 const tokenDir = ".token";
 
 sdkLogger.configure({
@@ -18,7 +17,7 @@ sdkLogger.configure({
 // 个人任务签到
 const doUserTask = async (cloudClient, logger) => {
   const result = await cloudClient.userSign()
-  const netdiskBonus = result.isSign? 0: result.netdiskBonus
+  const netdiskBonus = result.isSign ? 0 : result.netdiskBonus
   logger.info(`个人签到任务: 获得 ${netdiskBonus}M 空间`);
 };
 
@@ -38,7 +37,7 @@ const run = async (userName, password, userSizeInfoMap, logger) => {
         userSizeInfo: beforeUserSizeInfo,
         logger,
       });
-      await Promise.all([doUserTask(cloudClient, logger)]);
+      await doUserTask(cloudClient, logger);
     } catch (e) {
       if (e.response) {
         logger.log(`请求失败: ${e.response.statusCode}, ${e.response.body}`);
@@ -64,7 +63,7 @@ async function main() {
   for (let index = 0; index < accounts.length; index++) {
     const account = accounts[index];
     const { userName, password } = account;
-    const userNameInfo = mask(userName, 3, 7);
+    const userNameInfo = mask(userName, 1, Math.max(1, userName.length - 1));
     const logger = log4js.getLogger(userName);
     logger.addContext("user", userNameInfo);
     await run(userName, password, userSizeInfoMap, logger);
@@ -110,10 +109,9 @@ async function main() {
     await delay(1000);
   } finally {
     const logs = catLogs();
-    const events = recording.replay();
-    const content = events.map((e) => `${e.data.join("")}`).join("  \n");
+    const content = replayLogs();
     push("天翼云盘自动签到任务", logs + content);
-    recording.erase();
+    eraseLogs();
     cleanLogs();
   }
 })();
