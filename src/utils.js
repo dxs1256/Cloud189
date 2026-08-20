@@ -4,12 +4,6 @@ const mask = (s, start, end) => s.split("").fill("*", start, end).join("");
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const formatDateISO = (date) => {
-  const isoString = date.toISOString();
-  const formattedDate = isoString.split("T")[0];
-  return formattedDate;
-};
-
 const ipAddrHosts = [
   {
     url: "https://ipinfo.io/json",
@@ -38,7 +32,9 @@ const getIpAddr = async () => {
       if (ipAddr) {
         process.env.IP_ADDRESS = ipAddr;
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn(`获取 IP 地址失败: ${e.message}`);
+    }
   }
   return process.env.IP_ADDRESS;
 };
@@ -54,7 +50,6 @@ function groupByNum(array, groupNum) {
 module.exports = {
   mask,
   delay,
-  formatDateISO,
   getIpAddr,
   groupByNum
 };
