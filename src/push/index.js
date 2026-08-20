@@ -115,19 +115,16 @@ const pushWxPusher = (title, desp) => {
 };
 
 const pushPlusPusher = (title, desp) => {
-  // 如果没有配置 pushPlus 的 token，则不执行推送
   if (!pushPlus.token) {
     return;
   }
-  // 请求体
   const data = {
     token: pushPlus.token,
     title: title,
     content: desp,
   };
-  // 发送请求
   superagent
-    .post("http://www.pushplus.plus/send/")
+    .post("https://www.pushplus.plus/send/")
     .send(data)
     .then((res) => {
       if (res.body?.code === 200) {
@@ -149,11 +146,9 @@ const pushBark = (title, desp) => {
   superagent
     .get(encodedUrl)
     .then((response) => {
-      // 请求成功
       logger.info("Bark推送成功");
     })
     .catch((error) => {
-      // 请求失败
       logger.error(`Bark推送失败: ${JSON.stringify(error)}`);
     });
 };
@@ -162,20 +157,18 @@ const pushShowDoc = (title, desp) => {
   if (!showDoc.sendKey) {
     return;
   }
-  const encodedUrl = encodeURI(`https://push.showdoc.com.cn/server/api/push/${showDoc.sendKey}`);
   const data = {
     title: title,
     content: desp,
   };
   superagent
-    .get(encodedUrl)
+    .post(`https://push.showdoc.com.cn/server/api/push/${showDoc.sendKey}`)
+    .type("form")
     .send(data)
     .then((response) => {
-      // 请求成功
       logger.info("ShowDoc推送成功");
     })
     .catch((error) => {
-      // 请求失败
       logger.error(`ShowDoc推送失败: ${JSON.stringify(error)}`);
     });
 };
