@@ -18,5 +18,5 @@ tests/**/coverage/
 cheese.log
 
 .token
-
 .logs
+.env
